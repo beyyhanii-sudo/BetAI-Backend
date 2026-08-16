@@ -1,4 +1,0 @@
-# BetAI-Backend
-fastapi
-uvicorn
-httpx
