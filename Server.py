@@ -1,21 +1,27 @@
- from fastapi import FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
 import os
 import httpx
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import math
 
 
 # =========================================================
-# BetAI
+# BetAI BACKEND
 # =========================================================
 
 app = FastAPI(
     title="BetAI Backend",
-    version="2.0.0"
+    version="2.1.0"
 )
+
+
+# =========================================================
+# CORS
+# =========================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +31,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# =========================================================
+# AYARLAR
+# =========================================================
+
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 
 API_URL = "https://v3.football.api-sports.io"
@@ -33,12 +44,13 @@ TURKEY_TZ = ZoneInfo("Europe/Istanbul")
 
 
 # =========================================================
-# API İSTEĞİ
+# API-FOOTBALL İSTEĞİ
 # =========================================================
 
 async def football_request(endpoint, params=None):
 
     if not API_KEY:
+
         return None, "API_FOOTBALL_KEY bulunamadi"
 
     headers = {
@@ -47,7 +59,9 @@ async def football_request(endpoint, params=None):
 
     try:
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(
+            timeout=30
+        ) as client:
 
             response = await client.get(
                 f"{API_URL}/{endpoint}",
@@ -55,13 +69,23 @@ async def football_request(endpoint, params=None):
                 params=params or {}
             )
 
+        # HTTP kontrolü
         if response.status_code != 200:
-            return None, f"API HTTP {response.status_code}"
+
+            return None, (
+                f"API HTTP hatasi: "
+                f"{response.status_code} - "
+                f"{response.text[:500]}"
+            )
 
         data = response.json()
 
-        if data.get("errors"):
-            return None, str(data["errors"])
+        # API-Football kendi hata sistemi
+        errors = data.get("errors")
+
+        if errors:
+
+            return None, str(errors)
 
         return data, None
 
@@ -80,7 +104,7 @@ async def home():
     return {
         "status": "online",
         "app": "BetAI",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "message": "BetAI Backend calisiyor!"
     }
 
@@ -113,28 +137,49 @@ async def matches():
     data, error = await football_request(
         "fixtures",
         {
-            "date": today
+            "date": today,
+            "timezone": "Europe/Istanbul"
         }
     )
 
+    # API hatası
     if error:
 
         return JSONResponse(
             status_code=502,
             content={
-                "error": error,
+                "status": "error",
+                "error": "API-Football verisi alinamadi",
+                "details": error,
+                "date": today,
                 "matches": []
             }
         )
 
-    fixtures = data.get(
+    if not data:
+
+        return JSONResponse(
+            status_code=502,
+            content={
+                "status": "error",
+                "error": "API-Football bos cevap verdi",
+                "date": today,
+                "matches": []
+            }
+        )
+
+    api_matches = data.get(
         "response",
         []
     )
 
     result = []
 
-    for match in fixtures:
+    # =====================================================
+    # MAÇLARI İŞLE
+    # =====================================================
+
+    for match in api_matches:
 
         fixture = match.get(
             "fixture",
@@ -230,6 +275,10 @@ async def matches():
                 None
         })
 
+    # =====================================================
+    # CEVAP
+    # =====================================================
+
     return {
 
         "status":
@@ -247,47 +296,58 @@ async def matches():
 
 
 # =========================================================
-# TAKIM İSTATİSTİKLERİ
+# TEK MAÇ BİLGİSİ
 # =========================================================
 
-async def get_team_statistics(
-    team_id,
-    league_id,
-    season
+@app.get("/api/fixture/{fixture_id}")
+async def fixture_info(
+    fixture_id: int
 ):
 
     data, error = await football_request(
-        "teams/statistics",
+        "fixtures",
         {
-            "team": team_id,
-            "league": league_id,
-            "season": season
+            "id": fixture_id,
+            "timezone": "Europe/Istanbul"
         }
     )
 
     if error:
-        return None
 
-    if not data:
-        return None
+        return JSONResponse(
+            status_code=502,
+            content={
+                "status": "error",
+                "error": error,
+                "fixture_id": fixture_id
+            }
+        )
 
     response = data.get(
-        "response"
+        "response",
+        []
     )
 
     if not response:
-        return None
 
-    return response
+        return {
+            "status": "not_found",
+            "fixture_id": fixture_id,
+            "message": "Mac bulunamadi."
+        }
+
+    return {
+        "status": "success",
+        "fixture_id": fixture_id,
+        "fixture": response[0]
+    }
 
 
 # =========================================================
-# SON MAÇLAR
+# SON 5 MAÇ
 # =========================================================
 
-async def get_recent_matches(
-    team_id
-):
+async def get_recent_matches(team_id):
 
     data, error = await football_request(
         "fixtures",
@@ -310,7 +370,7 @@ async def get_recent_matches(
 
 
 # =========================================================
-# TAKIM FORM HESABI
+# FORM HESABI
 # =========================================================
 
 def calculate_form(
@@ -375,9 +435,11 @@ def calculate_form(
             goals_against += away_goals
 
             if home_goals > away_goals:
+
                 points += 3
 
             elif home_goals == away_goals:
+
                 points += 1
 
         elif away_id == team_id:
@@ -386,18 +448,20 @@ def calculate_form(
             goals_against += home_goals
 
             if away_goals > home_goals:
+
                 points += 3
 
             elif away_goals == home_goals:
+
                 points += 1
 
     if games == 0:
 
         return {
+            "games": 0,
             "points": 0,
             "goals_for": 0,
             "goals_against": 0,
-            "games": 0,
             "form": 0
         }
 
@@ -406,6 +470,9 @@ def calculate_form(
     ) * 100
 
     return {
+
+        "games":
+            games,
 
         "points":
             points,
@@ -416,16 +483,16 @@ def calculate_form(
         "goals_against":
             goals_against,
 
-        "games":
-            games,
-
         "form":
-            round(form, 2)
+            round(
+                form,
+                1
+            )
     }
 
 
 # =========================================================
-# BETAI ANALİZ MOTORU
+# BETAI TAHMİN MOTORU
 # =========================================================
 
 def calculate_prediction(
@@ -433,15 +500,15 @@ def calculate_prediction(
     away_form
 ):
 
-    home_games = home_form["games"]
-    away_games = away_form["games"]
-
     if (
-        home_games == 0
-        or away_games == 0
+        home_form["games"] == 0
+        or away_form["games"] == 0
     ):
 
         return None
+
+    home_games = home_form["games"]
+    away_games = away_form["games"]
 
     home_attack = (
         home_form["goals_for"]
@@ -463,22 +530,25 @@ def calculate_prediction(
         / away_games
     )
 
-    home_strength = (
+    home_form_score = (
         home_form["form"]
         / 100
     )
 
-    away_strength = (
+    away_form_score = (
         away_form["form"]
         / 100
     )
 
-    # Ev sahibi avantajı
+    # -----------------------------------------------------
+    # 1X2 PUANLARI
+    # -----------------------------------------------------
+
     home_score = (
         50
         + (
-            home_strength
-            - away_strength
+            home_form_score
+            - away_form_score
         ) * 25
         + 7
         + (
@@ -490,8 +560,8 @@ def calculate_prediction(
     away_score = (
         50
         + (
-            away_strength
-            - home_strength
+            away_form_score
+            - home_form_score
         ) * 25
         + (
             away_attack
@@ -499,32 +569,44 @@ def calculate_prediction(
         ) * 5
     )
 
-    draw_score = 100 - abs(
-        home_score - away_score
+    draw_score = (
+        100
+        - abs(
+            home_score
+            - away_score
+        )
     )
 
-    if draw_score < 20:
-        draw_score = 20
+    draw_score = max(
+        20,
+        draw_score
+    )
 
     total = (
         home_score
-        + away_score
         + draw_score
+        + away_score
     )
 
     home_probability = (
-        home_score / total
+        home_score
+        / total
     ) * 100
 
     draw_probability = (
-        draw_score / total
+        draw_score
+        / total
     ) * 100
 
     away_probability = (
-        away_score / total
+        away_score
+        / total
     ) * 100
 
-    # Gol tahmini
+    # -----------------------------------------------------
+    # GOL HESABI
+    # -----------------------------------------------------
+
     expected_goals = (
         home_attack
         + away_attack
@@ -532,54 +614,55 @@ def calculate_prediction(
         + away_defence
     ) / 2
 
-    over25 = min(
-        90,
-        max(
-            10,
-            35 + expected_goals * 18
+    over25 = (
+        35
+        + expected_goals * 18
+    )
+
+    over25 = max(
+        10,
+        min(
+            90,
+            over25
         )
     )
 
-    btts = min(
-        90,
-        max(
-            10,
-            30
-            + (
-                home_attack
-                + away_attack
-            ) * 18
+    btts = (
+        30
+        + (
+            home_attack
+            + away_attack
+        ) * 18
+    )
+
+    btts = max(
+        10,
+        min(
+            90,
+            btts
         )
     )
+
+    # -----------------------------------------------------
+    # TAHMİN
+    # -----------------------------------------------------
 
     probabilities = {
 
-        "home":
+        "Ev sahibi":
             home_probability,
 
-        "draw":
+        "Beraberlik":
             draw_probability,
 
-        "away":
+        "Deplasman":
             away_probability
     }
 
-    best_result = max(
+    prediction = max(
         probabilities,
         key=probabilities.get
     )
-
-    if best_result == "home":
-
-        advice = "Ev sahibi kazanir"
-
-    elif best_result == "away":
-
-        advice = "Deplasman kazanir"
-
-    else:
-
-        advice = "Beraberlik"
 
     confidence = max(
         home_probability,
@@ -588,6 +671,9 @@ def calculate_prediction(
     )
 
     return {
+
+        "prediction":
+            prediction,
 
         "home_probability":
             round(
@@ -625,9 +711,6 @@ def calculate_prediction(
                 1
             ),
 
-        "prediction":
-            advice,
-
         "expected_goals":
             round(
                 expected_goals,
@@ -648,7 +731,8 @@ async def analyze(
     data, error = await football_request(
         "fixtures",
         {
-            "id": fixture_id
+            "id": fixture_id,
+            "timezone": "Europe/Istanbul"
         }
     )
 
@@ -657,14 +741,10 @@ async def analyze(
         return JSONResponse(
             status_code=502,
             content={
-                "error":
-                    "API-Football verisi alinamadi",
-
-                "details":
-                    error,
-
-                "fixture_id":
-                    fixture_id
+                "status": "error",
+                "error": "API-Football verisi alinamadi",
+                "details": error,
+                "fixture_id": fixture_id
             }
         )
 
@@ -676,22 +756,12 @@ async def analyze(
     if not response:
 
         return {
-            "status":
-                "not_found",
-
-            "fixture_id":
-                fixture_id,
-
-            "message":
-                "Mac bulunamadi."
+            "status": "not_found",
+            "fixture_id": fixture_id,
+            "message": "Mac bulunamadi."
         }
 
     match = response[0]
-
-    fixture = match.get(
-        "fixture",
-        {}
-    )
 
     teams = match.get(
         "teams",
@@ -721,25 +791,13 @@ async def analyze(
         "id"
     )
 
-    league_id = league.get(
-        "id"
-    )
-
-    season = league.get(
-        "season"
-    )
-
     if not home_id or not away_id:
 
         return {
-            "status":
-                "error",
-
-            "message":
-                "Takim bilgileri bulunamadi."
+            "status": "error",
+            "message": "Takim bilgileri bulunamadi."
         }
 
-    # Son 5 maç
     home_recent = await get_recent_matches(
         home_id
     )
@@ -766,8 +824,7 @@ async def analyze(
     if not prediction:
 
         return {
-            "status":
-                "insufficient_data",
+            "status": "insufficient_data",
 
             "fixture_id":
                 fixture_id,
@@ -779,7 +836,7 @@ async def analyze(
                 away.get("name"),
 
             "message":
-                "Yeterli veri bulunamadi."
+                "Yeterli son mac verisi bulunamadi."
         }
 
     return {
@@ -799,6 +856,9 @@ async def analyze(
         "away":
             away.get("name"),
 
+        "ai_status":
+            "BetAI analiz hazir",
+
         "analysis":
             prediction,
 
@@ -806,10 +866,7 @@ async def analyze(
             home_form,
 
         "away_form":
-            away_form,
-
-        "ai_status":
-            "BetAI analiz hazir"
+            away_form
     }
 
 
@@ -827,7 +884,8 @@ async def top_picks():
     data, error = await football_request(
         "fixtures",
         {
-            "date": today
+            "date": today,
+            "timezone": "Europe/Istanbul"
         }
     )
 
@@ -836,7 +894,9 @@ async def top_picks():
         return JSONResponse(
             status_code=502,
             content={
+                "status": "error",
                 "error": error,
+                "date": today,
                 "matches": []
             }
         )
@@ -847,10 +907,6 @@ async def top_picks():
     )
 
     picks = []
-
-    # API limitlerini korumak için
-    # sadece oynanmamış maçları değerlendir.
-    upcoming = []
 
     for match in fixtures:
 
@@ -864,22 +920,14 @@ async def top_picks():
             "short"
         )
 
-        if status == "NS":
+        # Sadece başlamamış maçlar
+        if status != "NS":
+            continue
 
-            upcoming.append(match)
-
-    # En fazla 15 maç analiz edilir.
-    for match in upcoming[:15]:
-
-        fixture_id = match.get(
+        fixture = match.get(
             "fixture",
             {}
-        ).get(
-            "id"
         )
-
-        if not fixture_id:
-            continue
 
         teams = match.get(
             "teams",
@@ -903,6 +951,9 @@ async def top_picks():
         away_id = away.get(
             "id"
         )
+
+        if not home_id or not away_id:
+            continue
 
         home_recent = await get_recent_matches(
             home_id
@@ -930,15 +981,8 @@ async def top_picks():
         if not prediction:
             continue
 
-        # Sadece %55 ve üzeri güven
-        # gösterilecek.
         if prediction["confidence"] < 55:
             continue
-
-        fixture = match.get(
-            "fixture",
-            {}
-        )
 
         timestamp = fixture.get(
             "timestamp"
@@ -946,30 +990,31 @@ async def top_picks():
 
         if timestamp:
 
-            time = datetime.fromtimestamp(
+            match_time = datetime.fromtimestamp(
                 timestamp,
                 TURKEY_TZ
             ).strftime("%H:%M")
 
         else:
 
-            time = "--:--"
+            match_time = "--:--"
 
         picks.append({
 
             "fixture_id":
-                fixture_id,
+                fixture.get("id"),
 
             "league":
                 match.get(
                     "league",
                     {}
                 ).get(
-                    "name"
+                    "name",
+                    "Bilinmiyor"
                 ),
 
             "time":
-                time,
+                match_time,
 
             "home":
                 home.get(
@@ -982,7 +1027,9 @@ async def top_picks():
                 ),
 
             "prediction":
-                prediction["prediction"],
+                prediction[
+                    "prediction"
+                ],
 
             "home_probability":
                 prediction[
@@ -1000,13 +1047,24 @@ async def top_picks():
                 ],
 
             "btts":
-                prediction["btts"],
+                prediction[
+                    "btts"
+                ],
 
             "over25":
-                prediction["over25"],
+                prediction[
+                    "over25"
+                ],
 
             "confidence":
-                prediction["confidence"],
+                prediction[
+                    "confidence"
+                ],
+
+            "expected_goals":
+                prediction[
+                    "expected_goals"
+                ],
 
             "ai_status":
                 "BetAI analiz hazir"
